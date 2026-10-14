@@ -96,13 +96,15 @@ office:
     hand_off para Beto com esse brief. Não escreva o artigo. Não publique.
     Data local de referência: {date}.
 
+# Desks run on OFFICE_TEXT_MODEL (default gemini-3.5-flash-lite). A desk can
+# route its own work elsewhere with `model: <provider>/<model>`, for example
+#   model: fireworks/accounts/fireworks/models/deepseek-v4p1-flash
 agents:
   - id: rafa
     name: Rafa
     role: Diretor
     avatarType: executive_formal
     color: "#1d4ed8"
-    model: gemini-3.5-flash-lite
     gender: male
     voiceName: Charon
     voicePitch: 0.9
@@ -146,7 +148,6 @@ agents:
     role: Editor-chefe
     avatarType: analyst_casual
     color: "#0f766e"
-    model: gemini-3.5-flash-lite
     gender: male
     voiceName: Fenrir
     voicePitch: 0.78
@@ -196,7 +197,6 @@ agents:
     role: Redatora
     avatarType: researcher_coat
     color: "#7c3aed"
-    model: gemini-3.5-flash-lite
     gender: female
     voiceName: Kore
     voicePitch: 1.15
@@ -248,7 +248,6 @@ agents:
     role: Copy editor
     avatarType: analyst_casual
     color: "#db2777"
-    model: gemini-3.5-flash-lite
     gender: female
     voiceName: Zephyr
     voicePitch: 1.05
@@ -279,7 +278,6 @@ agents:
     role: Especialista em publicação
     avatarType: cyber_specialist
     color: "#ea580c"
-    model: gemini-3.5-flash-lite
     gender: female
     voiceName: Kore
     voicePitch: 1.22

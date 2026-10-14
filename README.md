@@ -26,7 +26,7 @@ docker compose -f docker/docker-compose.yml --env-file .env up -d
 
 Interactive controls:
 
-- Click a person and use the card at the bottom left. **Falar** opens a Gemini Live call with that desk: you can speak or type, and they can take the request, hand it to a teammate, or pin a note.
+- Click a person and use the card at the bottom left. **Falar** opens a Gemini Live call with that desk: you can speak or type, and they can take the request, hand it to a teammate, or pin a note. Voice needs Gemini; without it the button is hidden and the card only assigns tasks.
 - In first-person or VR, look at someone. The microphone follows that person until you mute it.
 - Open **Quadro** to assign a task, pin a note with no owner, or archive a card.
 
@@ -69,7 +69,7 @@ CrewAI's own LanceDB memory is disabled. Recall goes through EpochDB.
 ```bash
 cd the-office-crewai
 cp .env.example .env
-# set GEMINI_API_KEY
+# set GEMINI_API_KEY, or another provider (see Providers)
 # set OFFICE_READ_ONLY=false to enable interactive mode
 
 docker compose -f docker/docker-compose.yml --env-file .env up --build
@@ -93,22 +93,77 @@ Frontend dev server (proxies to 127.0.0.1:8780):
 cd frontend && npm run dev
 ```
 
+## Providers
+
+Desks run on Gemini unless you pick something else. A model is written `<provider>/<model>`. A bare name, or a Gemini resource name like `models/gemini-2.5-flash`, means Gemini, so existing configs keep working.
+
+| Provider | Example model | Key |
+|----------|---------------|-----|
+| `gemini` (default) | `gemini/gemini-3.5-flash-lite` | `GEMINI_API_KEY` |
+| `deepseek` | `deepseek/deepseek-flash` | `DEEPSEEK_API_KEY` |
+| `fireworks` | `fireworks/accounts/fireworks/models/deepseek-v4p1-flash` | `FIREWORKS_API_KEY` |
+| `openai` | `openai/<model>` on any OpenAI-compatible server (vLLM, Ollama, a gateway) | `OFFICE_OPENAI_API_KEY` and `OFFICE_OPENAI_BASE_URL` |
+
+`OFFICE_TEXT_MODEL` sets the model for every desk. A desk can send its own work elsewhere with `model:` in `config/office.yml`:
+
+```yaml
+  - id: laura
+    name: Laura
+    model: fireworks/accounts/fireworks/models/deepseek-v4p1-flash
+```
+
+- DeepSeek desks run with thinking off. In thinking mode with tools, DeepSeek requires `reasoning_content` to be sent back on every request, and CrewAI does not send it.
+- Fireworks and `openai/` servers are called through Chat Completions only, never the Responses API, which can store conversations on the provider.
+- Live voice (**Falar**) and cover images exist only on Gemini. Without Gemini, **Falar** is hidden, the first-person view says voice is unavailable, and Bete publishes text-only posts.
+- Board recall follows `OFFICE_EMBED_MODEL`: `gemini/…`, `fireworks/…`, `openai/…`, `local/<sentence-transformers model>`, or `off`. `local/…` needs `pip install "epochdb[embeddings]"`, which brings in PyTorch and is not in the default install or image; without it, recall stays off and the log says why. Fireworks embedding ids start with `fireworks/`, so the value repeats it: `fireworks/fireworks/qwen3-embedding-8b`. Changing the embedding model or `EPOCHDB_DIM` needs a fresh `data/`.
+- An unknown provider name stops the server at startup and names the desk.
+
+## Anonymous mode
+
+`OFFICE_ALLOWED_PROVIDERS` lists the only providers the office may call, for example `fireworks`. With it set:
+
+- The server refuses to start if a desk or the board embeddings resolve to another provider, and says which.
+- Covers and voice switch off unless `gemini` is in the list.
+- CrewAI telemetry and tracing are turned off.
+
+Fireworks does not store prompts or outputs for open models by default ([data handling](https://docs.fireworks.ai/guides/security_compliance/data_handling)). `local/…` embeddings run on this machine once `epochdb[embeddings]` is installed; the model downloads once. Publishing to Blogger talks to Google by design: leave the `BLOGGER_*` settings empty to keep the office off Google entirely.
+
+Set `OFFICE_BROWSER_PROXY` (for example `socks5://127.0.0.1:9050`) so the desks' Chromium does not browse from your address. API calls follow the standard `HTTPS_PROXY`. The page itself still loads two fonts from Google Fonts.
+
+A Fireworks-only `.env`:
+
+```bash
+OFFICE_ALLOWED_PROVIDERS=fireworks
+FIREWORKS_API_KEY=...
+OFFICE_TEXT_MODEL=fireworks/accounts/fireworks/models/deepseek-v4p1-flash
+OFFICE_EMBED_MODEL=fireworks/fireworks/qwen3-embedding-8b
+EPOCHDB_DIM=768
+```
+
 ## Environment
 
 Copy `.env.example` to `.env`. Restart after any change. Docker reads that file through `--env-file .env`. Inside the container, Compose forces `OFFICE_HOST=0.0.0.0` and still publishes the port only on `127.0.0.1`.
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
-| `GEMINI_API_KEY` | required | Desk text, live voice, cover images, and EpochDB embeddings. |
+| `GEMINI_API_KEY` | empty | Gemini key. Needed when desks, embeddings, covers, or voice use Gemini, which is the default. |
 | `OFFICE_READ_ONLY` | `true` | `false` enables interactive mode. Any other value stays view-only. |
 | `OFFICE_HOST` | `127.0.0.1` | Address for `python backend/main.py`. Docker overrides this inside the container. |
 | `OFFICE_PORT` | `8780` | Listen port, and the host port Docker publishes on `127.0.0.1`. |
 | `APP_URL` | `http://127.0.0.1:8780` | Local URL shown for this office. |
-| `GEMINI_TEXT_MODEL` | `gemini-3.5-flash-lite` | Model for desk writing and tool calls. |
+| `OFFICE_TEXT_MODEL` | `gemini-3.5-flash-lite` | Model for every desk, as `<provider>/<model>`. See [Providers](#providers). |
+| `GEMINI_TEXT_MODEL` | empty | Older name for `OFFICE_TEXT_MODEL`, used when that is unset. |
+| `DEEPSEEK_API_KEY` | empty | Key for `deepseek/…` models. `DEEPSEEK_BASE_URL` overrides the endpoint. |
+| `FIREWORKS_API_KEY` | empty | Key for `fireworks/…` models. `FIREWORKS_BASE_URL` overrides the endpoint. |
+| `OFFICE_OPENAI_BASE_URL` | empty | Base URL for `openai/…` models, for example `http://127.0.0.1:8000/v1`. |
+| `OFFICE_OPENAI_API_KEY` | empty | Key for that server. Any value works for a server without auth. |
 | `GEMINI_VOICE_MODEL` | `gemini-3.8-live` | Gemini Live model for **Falar**. Used only when interactive mode is on. |
 | `GEMINI_IMAGE_MODEL` | `gemini-3.1-flash-image` | Model Bete uses for the one cover image per post. |
-| `EPOCHDB_MODEL` | `google:gemini-embedding-2` when an API key is set | Embedding model for board recall. `EPOCHDB_EMBEDDING_MODEL` is an alias. |
-| `EPOCHDB_DIM` | `768` | Embedding size. `768` matches `gemini-embedding-2`. |
+| `OFFICE_EMBED_MODEL` | Gemini when its key is set, else `off` | Board recall embeddings, as `<provider>/<model>`, `local/<model>`, or `off`. Wins over `EPOCHDB_MODEL`. |
+| `EPOCHDB_MODEL` | `google:gemini-embedding-2` when an API key is set | Embedding model in EpochDB's own format. `EPOCHDB_EMBEDDING_MODEL` is an alias. |
+| `EPOCHDB_DIM` | `768` | Embedding size. `768` matches `gemini-embedding-2` and is the default for `fireworks/` and `openai/` embeddings. |
+| `OFFICE_ALLOWED_PROVIDERS` | empty | Anonymous mode: comma-separated providers the office may call. See [Anonymous mode](#anonymous-mode). |
+| `OFFICE_BROWSER_PROXY` | empty | `http://host:port` or `socks5://host:port` for the desks' Chromium. |
 | `OFFICE_LANGUAGE` | `pt-BR` | Language the desks write and speak. `en` or `en-US` selects English. When this is unset, `language` in `config/office.yml` is used. |
 | `TZ` | `America/Sao_Paulo` | Clock for the process. Publish-slot times follow `timezone` in `config/office.yml`. |
 | `OFFICE_SCHEDULER_ENABLED` | `true` | `false`, `0`, `no`, or `off` pauses new daily slots. Tasks already on the board still resume. |
@@ -161,8 +216,8 @@ docker/                 local compose file, bound to 127.0.0.1
 | Piece | Role |
 |-------|------|
 | CrewAI 1.15.26 | Tool loop for the desk that is awake |
-| Gemini | Desks use `gemini-3.5-flash-lite`. Live voice uses `gemini-3.8-live`. Covers use a separate image model. |
-| EpochDB ≥ 1.11.2 | Board atoms and recall. Embeddings use `google:gemini-embedding-2` at 768 dimensions when `GEMINI_API_KEY` is set |
+| Models | Desks use Gemini `gemini-3.5-flash-lite` by default, or DeepSeek, Fireworks, or any OpenAI-compatible server. Live voice (`gemini-3.8-live`) and covers need Gemini. |
+| EpochDB ≥ 1.11.2 | Board atoms and recall. Embeddings follow `OFFICE_EMBED_MODEL`; the default is `google:gemini-embedding-2` at 768 dimensions when `GEMINI_API_KEY` is set |
 | FastAPI | Health, office snapshot, jobs, SSE, monitor WebSocket, and the interactive writes |
 | Playwright | One headless Chromium page per desk, mirrored onto that monitor |
 

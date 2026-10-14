@@ -9,7 +9,7 @@ import os
 import re
 import unicodedata
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import httpx
 
@@ -225,18 +225,27 @@ async def upload_blogger_image(access_token: str, data: bytes, filename: str, mi
         return image_url_from_upload(body)
 
 
-def blog_image_tools(workspace: Path, client: Any) -> list:
-    """Tool Bete uses once, just before post_to_blogger."""
+def blog_image_tools(workspace: Path, client_factory: Callable[[], Any] | None) -> list:
+    """Tool Bete uses once, just before post_to_blogger.
+
+    ``client_factory`` returns a Gemini client. It is None when covers are off:
+    no Gemini key, or anonymous mode without Gemini.
+    """
     from runtime.tools import Tool
 
     async def generate_blog_image(title: str, description: str) -> str:
         """Generate one 16:9 cover and upload it so the post can embed it."""
+        if client_factory is None:
+            return (
+                "Capas desligadas nesta redação: não há provedor de imagem. "
+                "Publique o artigo só com texto, sem linha <img>, e registre isso no relatório."
+            )
         title = (title or "").strip()
         description = (description or "").strip()
         if not title:
             return "Título obrigatório para gerar a capa."
         try:
-            data, mime = await generate_cover_bytes(client, title, description)
+            data, mime = await generate_cover_bytes(client_factory(), title, description)
         except Exception as exc:
             logger.exception("Cover generation failed")
             return (

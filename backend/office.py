@@ -13,6 +13,14 @@ from typing import Any, Dict, List, Optional
 
 from runtime.blackboard import EpochBlackboard
 from runtime.events import EventType, LineageContext
+from runtime.providers import (
+    blocked,
+    crew_llm,
+    default_text_model,
+    gemini_extras_available,
+    require,
+    resolve,
+)
 from runtime.router import EventRouter
 
 logger = logging.getLogger("office.runtime")
@@ -289,9 +297,17 @@ def browser_tools(agent_id: str) -> list:
     state["mirror_monitor"] = True
     return browser_tool_list(agent_id)
 
+
+def desk_model(spec: Dict[str, Any]) -> str:
+    """The text model a desk runs on: its own ``model`` or the office default."""
+    model = str(spec.get("model") or "").strip()
+    # The live voice model is not a text model, so that desk writes on the default.
+    if not model or model == "gemini-3.8-live":
+        return default_text_model()
+    return model
+
 HIDDEN_LABELS = {"Agent", "AgentStatus"}
 BOARD_LABELS = {"Task", "Result", "Note", "Handoff", "Job"}
-TEXT_MODEL = os.getenv("GEMINI_TEXT_MODEL", "gemini-3.5-flash-lite")
 TEAM_ID = os.getenv("OFFICE_TEAM_ID", "the-office-v1")
 
 TOOL_FACTORIES = {
@@ -755,6 +771,22 @@ class Office:
             self._client = genai.Client(api_key=api_key)
         return self._client
 
+    def desk_models(self) -> List[tuple[str, str]]:
+        """(desk id, model) for every desk in the config, before the office starts."""
+        return [(str(spec.get("id")), desk_model(spec)) for spec in self._load_specs()]
+
+    def provider_problems(self) -> List[str]:
+        """Model settings that must stop the start: unknown providers, or ones anonymous mode blocks."""
+        problems: List[str] = []
+        entries: List[tuple[str, Optional[str]]] = []
+        for desk_id, model in self.desk_models():
+            try:
+                entries.append((f"desk '{desk_id}' ({model})", resolve(model).provider))
+            except ValueError as exc:
+                problems.append(f"desk '{desk_id}': {exc}")
+        entries.append(("board embeddings", self.board.embedding_provider))
+        return problems + blocked(entries)
+
     async def start(self) -> None:
         queue = await self.router.subscribe("*")
         self._fanout_task = asyncio.create_task(self._fanout(queue))
@@ -1076,7 +1108,7 @@ class Office:
             "activeItem": "computer",
             "gender": "male",
             "skills": [],
-            "model": TEXT_MODEL,
+            "model": default_text_model(),
             **spec,
             "tools": tools or list(ALL_TOOLS),
         }
@@ -2295,9 +2327,7 @@ class Office:
         parent_task_key: str = "",
     ) -> str:
         spec = worker.spec
-        model = spec.get("model") or TEXT_MODEL
-        if model == "gemini-3.8-live":
-            model = TEXT_MODEL
+        model = desk_model(spec)
 
         roster = format_team_roster(self.agents, exclude_id=worker.agent_id)
         my_task = self.task_brief(parent_task_key) if parent_task_key else "(ad-hoc)"
@@ -2368,7 +2398,9 @@ class Office:
         if "generate_blog_image" in wanted:
             from blog_images import blog_image_tools
 
-            tools.extend(blog_image_tools(self.workspace, self._gemini()))
+            # Covers need Gemini. Without it the tool tells Bete to publish text only.
+            images = self._gemini if gemini_extras_available() else None
+            tools.extend(blog_image_tools(self.workspace, images))
         if any(name in wanted for name in ("list_jobs", "close_job")):
             tools.extend([t for t in self.job_tools(worker) if getattr(t, "name", None) in wanted])
         if depth < 8 and "hand_off" in wanted:
@@ -2438,10 +2470,7 @@ class Office:
         )
 
     async def complete_text(self, spec: Dict[str, Any], prompt: str) -> str:
-        client = self._gemini()
-        model = spec.get("model") or TEXT_MODEL
-        if model == "gemini-3.8-live":
-            model = TEXT_MODEL
+        resolved = resolve(desk_model(spec))
         system = (
             f"You are {spec.get('name')}, {spec.get('role')}. "
             f"{spec.get('systemPrompt') or ''} "
@@ -2451,12 +2480,22 @@ class Office:
             "What you conclude should be readable on the shared blackboard."
         )
         board = self.board_summary()
-        response = await client.aio.models.generate_content(
-            model=model,
-            contents=f"Quadro agora:\n{board}\n\nTarefa:\n{prompt}",
-            config={"system_instruction": system, "temperature": 0.6},
-        )
-        text = (getattr(response, "text", None) or "").strip()
+        user = f"Quadro agora:\n{board}\n\nTarefa:\n{prompt}"
+        if resolved.provider == "gemini":
+            require(resolved)
+            response = await self._gemini().aio.models.generate_content(
+                model=resolved.model,
+                contents=user,
+                config={"system_instruction": system, "temperature": 0.6},
+            )
+            text = (getattr(response, "text", None) or "").strip()
+        else:
+            llm = crew_llm(resolved, temperature=0.6)
+            reply = await llm.acall([
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ])
+            text = str(reply or "").strip()
         if not text:
-            raise RuntimeError(f"Modelo {model} não devolveu texto")
+            raise RuntimeError(f"Modelo {resolved.label} não devolveu texto")
         return text

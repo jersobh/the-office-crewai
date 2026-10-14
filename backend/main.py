@@ -30,6 +30,17 @@ sys.path.insert(0, str(BACKEND))
 load_dotenv(ROOT / ".env")
 load_dotenv(BACKEND / ".env", override=True)
 
+from runtime.providers import (  # noqa: E402
+    allowed_providers,
+    api_key,
+    apply_privacy_defaults,
+    gemini_extras_available,
+    resolve,
+)
+
+# Anonymous mode switches CrewAI telemetry off before anything imports crewai.
+apply_privacy_defaults()
+
 from runtime.browser import (  # noqa: E402
     _fix_playwright_browser_path,
     _latest_frames,
@@ -94,6 +105,18 @@ from scheduler import DailyPublisher  # noqa: E402
 
 office_config = load_office_config(CONFIG_PATH)
 office = Office(STORAGE, config=office_config, config_path=CONFIG_PATH)
+
+# Fail closed: an unknown provider, or one anonymous mode rules out, stops the start.
+_provider_problems = office.provider_problems()
+if _provider_problems:
+    for _problem in _provider_problems:
+        logger.error("Model settings: %s", _problem)
+    raise SystemExit("The Office did not start: " + "; ".join(_provider_problems))
+for _desk_id, _model in office.desk_models():
+    _resolved = resolve(_model)
+    if not api_key(_resolved.provider):
+        logger.warning("Desk %s runs on %s but %s is not set", _desk_id, _resolved.label, _resolved.key_env)
+
 publisher = DailyPublisher(office, office_config.get("office") or {})
 
 _monitor_queues: list[asyncio.Queue] = []
@@ -234,6 +257,11 @@ def _require_interactive() -> None:
         raise HTTPException(status_code=403, detail="View-only mode.")
 
 
+def _voice_available() -> bool:
+    """Live voice is Gemini Live, so it needs Gemini as well as interactive mode."""
+    return not READ_ONLY and gemini_extras_available()
+
+
 @app.get("/api/health")
 async def health():
     cfg = office_config.get("office") or {}
@@ -241,6 +269,8 @@ async def health():
         "status": "ok",
         "read_only": READ_ONLY,
         "mode": "view-only" if READ_ONLY else "interactive",
+        "anonymous": allowed_providers() is not None,
+        "voice_available": _voice_available(),
         "host": HOST,
         "office": cfg.get("name"),
         "articles_per_day": cfg.get("articles_per_day", 3),
@@ -254,6 +284,7 @@ async def get_office():
     snap = office.snapshot()
     snap["read_only"] = READ_ONLY
     snap["mode"] = "view-only" if READ_ONLY else "interactive"
+    snap["voice_available"] = _voice_available()
     cfg = office_config.get("office") or {}
     blog_url = os.getenv("BLOGGER_BLOG_URL", "").strip() or (cfg.get("blog") or {}).get("url") or ""
     snap["config"] = {
@@ -367,6 +398,14 @@ async def live_voice(websocket: WebSocket, agent_id: str):
         await websocket.send_json({
             "event": "error",
             "message": "View-only mode. Set OFFICE_READ_ONLY=false to talk to a desk.",
+        })
+        await websocket.close()
+        return
+    if not gemini_extras_available():
+        await websocket.accept()
+        await websocket.send_json({
+            "event": "error",
+            "message": "Voice needs Gemini. Set GEMINI_API_KEY, and allow gemini if OFFICE_ALLOWED_PROVIDERS is set.",
         })
         await websocket.close()
         return

@@ -7,7 +7,7 @@ import logging
 import os
 from pathlib import Path
 from typing import Any, Callable
-from urllib.parse import urlparse
+from urllib.parse import unquote, urlparse
 
 from pydantic import BaseModel, Field
 
@@ -108,6 +108,27 @@ async def _publish_snapshot(page: Any, context_name: str) -> None:
         logger.debug("Desk monitor snapshot failed for %s", context_name, exc_info=True)
 
 
+def _proxy_settings(raw: str) -> dict[str, str]:
+    """Playwright proxy settings from OFFICE_BROWSER_PROXY, so desk browsing
+    leaves through it instead of this machine's address."""
+    value = (raw or "").strip()
+    if not value:
+        return {}
+    parsed = urlparse(value)
+    if parsed.scheme not in ("http", "https", "socks5") or not parsed.hostname:
+        raise ValueError("OFFICE_BROWSER_PROXY must look like http://host:port or socks5://host:port")
+    server = f"{parsed.scheme}://{parsed.hostname}"
+    if parsed.port:
+        server += f":{parsed.port}"
+    settings = {"server": server}
+    # Playwright takes credentials as separate fields, not inside the URL.
+    if parsed.username:
+        settings["username"] = unquote(parsed.username)
+    if parsed.password:
+        settings["password"] = unquote(parsed.password)
+    return settings
+
+
 async def _page(context_name: str) -> Any:
     from playwright.async_api import async_playwright
 
@@ -121,7 +142,11 @@ async def _page(context_name: str) -> Any:
         state["playwright"] = playwright
     browser = state.get("browser")
     if browser is None:
-        browser = await playwright.chromium.launch(headless=bool(state.get("headless", True)))
+        launch: dict[str, Any] = {"headless": bool(state.get("headless", True))}
+        proxy = _proxy_settings(os.getenv("OFFICE_BROWSER_PROXY", ""))
+        if proxy:
+            launch["proxy"] = proxy
+        browser = await playwright.chromium.launch(**launch)
         state["browser"] = browser
     page = await browser.new_page(viewport={"width": 1280, "height": 800})
     state["page"] = page

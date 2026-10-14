@@ -12,8 +12,6 @@ export type AgentActivity =
 
 export type AgentStatus = 'idle' | 'thinking' | 'speaking';
 
-export type GeminiModel = 'gemini-3.5-flash-lite' | 'gemini-3.8-live';
-
 export type ViewMode = 'isometric' | 'first-person' | 'vr-stereo';
 
 export interface DataTransferBeam {
@@ -28,7 +26,8 @@ export interface Agent {
   name: string;
   role: string;
   avatarType: AvatarType;
-  model: GeminiModel;
+  /** `<provider>/<model>`, or a bare Gemini name such as gemini-3.5-flash-lite. */
+  model: string;
   color: string;
   systemPrompt: string;
   tools: string[];

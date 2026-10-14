@@ -96,7 +96,7 @@ export const FirstPersonHUD: React.FC<FirstPersonHUDProps> = ({
               <p className="mt-2 text-slate-300 italic line-clamp-2">“{lastTranscript}”</p>
             )}
             <p className="mt-2 text-[10px] text-slate-500">
-              {interactive ? (isListening ? 'Microfone aberto — fale com esta pessoa' : 'Microfone fechado') : 'Somente observação'}
+              {interactive ? (onToggleListening ? (isListening ? 'Microfone aberto — fale com esta pessoa' : 'Microfone fechado') : 'Voz indisponível nesta redação') : 'Somente observação'}
             </p>
             {interactive && onToggleListening && (
               <button

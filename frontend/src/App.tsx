@@ -102,6 +102,8 @@ export default function App() {
   const [articlesPerDay, setArticlesPerDay] = useState(3);
   const [blogUrl, setBlogUrl] = useState<string | undefined>();
   const [readOnly, setReadOnly] = useState(true);
+  // Live voice is Gemini Live. The server reports false when Gemini is not configured.
+  const [voiceAvailable, setVoiceAvailable] = useState(false);
   const [whiteboardNotes, setWhiteboardNotes] = useState<WhiteboardNote[]>([]);
   const [agentThinkingMap, setAgentThinkingMap] = useState<Record<string, boolean>>({});
   const [agentTaskCounts, setAgentTaskCounts] = useState<Record<string, number>>({});
@@ -137,6 +139,7 @@ export default function App() {
         if (data.config?.articles_per_day) setArticlesPerDay(Number(data.config.articles_per_day) || 3);
         if (data.config?.blog_url) setBlogUrl(String(data.config.blog_url));
         setReadOnly(data.read_only !== false);
+        setVoiceAvailable(data.voice_available === true);
         const notes: WhiteboardNote[] = [];
         for (const node of data.nodes || []) {
           const note = nodeToNote(node);
@@ -328,7 +331,7 @@ export default function App() {
   }, [markSpeaking]);
 
   useEffect(() => {
-    if (readOnly) {
+    if (readOnly || !voiceAvailable) {
       if (liveVoice.activeAgentId) stopTalking();
       return;
     }
@@ -349,7 +352,7 @@ export default function App() {
     }
     if (liveVoice.activeAgentId === agent.id) return;
     startTalking(agent.id);
-  }, [readOnly, viewMode, fpsMicEnabled, targetedAgent, selectedAgentId, startTalking, stopTalking]);
+  }, [readOnly, voiceAvailable, viewMode, fpsMicEnabled, targetedAgent, selectedAgentId, startTalking, stopTalking]);
 
   const assignTask = useCallback(async (agentId: string, prompt: string) => {
     if (!agentId) {
@@ -449,14 +452,14 @@ export default function App() {
         pendingReports={pendingReports}
         activeReportingAgentId={activeReportingAgentId}
         interactive={!readOnly}
-        isListening={!readOnly && fpsMicEnabled && liveAgentId !== null && viewMode !== 'isometric'}
-        onToggleListening={() => {
+        isListening={!readOnly && voiceAvailable && fpsMicEnabled && liveAgentId !== null && viewMode !== 'isometric'}
+        onToggleListening={voiceAvailable ? () => {
           setFpsMicEnabled(prev => {
             const next = !prev;
             if (!next) stopTalking();
             return next;
           });
-        }}
+        } : undefined}
         lastTranscript={lastTranscript}
       />
 
@@ -497,21 +500,23 @@ export default function App() {
               {selectedAgent.name}
               <span className="text-slate-400"> · {selectedAgent.role}</span>
             </p>
-            <button
-              type="button"
-              onClick={() => {
-                if (liveAgentId === selectedAgent.id) stopTalking(selectedAgent.id);
-                else startTalking(selectedAgent.id);
-              }}
-              className={`inline-flex items-center gap-1 px-2 py-1 rounded-lg text-[11px] font-semibold ${
-                liveAgentId === selectedAgent.id
-                  ? 'bg-amber-500 text-slate-950'
-                  : 'bg-slate-800 text-slate-200 border border-slate-600'
-              }`}
-            >
-              {liveAgentId === selectedAgent.id ? <Mic className="w-3.5 h-3.5" /> : <MicOff className="w-3.5 h-3.5" />}
-              {liveAgentId === selectedAgent.id ? 'Ouvindo' : 'Falar'}
-            </button>
+            {voiceAvailable && (
+              <button
+                type="button"
+                onClick={() => {
+                  if (liveAgentId === selectedAgent.id) stopTalking(selectedAgent.id);
+                  else startTalking(selectedAgent.id);
+                }}
+                className={`inline-flex items-center gap-1 px-2 py-1 rounded-lg text-[11px] font-semibold ${
+                  liveAgentId === selectedAgent.id
+                    ? 'bg-amber-500 text-slate-950'
+                    : 'bg-slate-800 text-slate-200 border border-slate-600'
+                }`}
+              >
+                {liveAgentId === selectedAgent.id ? <Mic className="w-3.5 h-3.5" /> : <MicOff className="w-3.5 h-3.5" />}
+                {liveAgentId === selectedAgent.id ? 'Ouvindo' : 'Falar'}
+              </button>
+            )}
           </div>
           {(liveLines[selectedAgent.id] || []).slice(-3).map((line, index) => (
             <p key={`${line.sender}-${index}`} className="text-[11px] text-slate-300 line-clamp-2">

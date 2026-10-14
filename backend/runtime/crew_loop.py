@@ -30,15 +30,6 @@ def bind_office_loop(loop: asyncio.AbstractEventLoop) -> None:
     _office_loop = loop
 
 
-def _gemini_model(name: str) -> str:
-    model = (name or os.getenv("GEMINI_TEXT_MODEL") or "gemini-3.5-flash-lite").strip()
-    if model.startswith("gemini/"):
-        return model
-    if model.startswith("google/"):
-        return "gemini/" + model.split("/", 1)[1]
-    return f"gemini/{model}"
-
-
 def _args_schema_from_callable(func: Any) -> Any:
     """Build a Pydantic args model from the real function, not from ``_run``.
 
@@ -157,17 +148,24 @@ async def run_desk_task(
     backstory: str,
     prompt: str,
     tools: Optional[list] = None,
-    model: str = "gemini-3.5-flash-lite",
+    model: str = "",
     max_iterations: int = 40,
     memory: Any = None,
 ) -> str:
-    """Kick off one CrewAI agent. EpochDB recall is prepended when available."""
-    from crewai import Agent, Crew, LLM, Process, Task
+    """Kick off one CrewAI agent. EpochDB recall is prepended when available.
+
+    ``model`` is ``<provider>/<model>``; empty means the office default.
+    """
+    from runtime.providers import apply_privacy_defaults, crew_llm, resolve
+
+    # Anonymous mode has to switch CrewAI telemetry off before crewai is imported.
+    apply_privacy_defaults()
+    from crewai import Agent, Crew, Process, Task
 
     bind_office_loop(asyncio.get_running_loop())
-    api_key = os.getenv("GEMINI_API_KEY", "").strip()
-    if not api_key:
-        raise RuntimeError("GEMINI_API_KEY is required")
+    resolved = resolve(model)
+    # Raises before any work when the key is missing or the provider is blocked.
+    llm = crew_llm(resolved, temperature=0.4)
 
     recall = ""
     if memory is not None and hasattr(memory, "recall"):
@@ -182,7 +180,6 @@ async def run_desk_task(
             f"{prompt}"
         )
 
-    llm = LLM(model=_gemini_model(model), api_key=api_key, temperature=0.4)
     crew_tools = [_as_crew_tool(item) for item in (tools or []) if isinstance(item, Tool)]
     agent = Agent(
         role=(role or "Newsroom desk").strip(),
@@ -213,7 +210,7 @@ async def run_desk_task(
         verbose=agent.verbose,
         memory=False,
     )
-    logger.info("CrewAI %s kickoff model=%s tools=%s", agent_name, llm.model, [t.name for t in crew_tools])
+    logger.info("CrewAI %s kickoff model=%s tools=%s", agent_name, resolved.label, [t.name for t in crew_tools])
     if hasattr(crew, "akickoff"):
         result = await crew.akickoff()
     else:

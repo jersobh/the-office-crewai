@@ -14,8 +14,6 @@ import os
 from typing import Any, Dict
 
 from fastapi import WebSocket, WebSocketDisconnect
-from google import genai
-from google.genai import types
 
 from office import (
     Office,
@@ -26,6 +24,7 @@ from office import (
     office_language_code,
     roster_colleague_hint,
 )
+from runtime.providers import gemini_extras_available
 
 logger = logging.getLogger("office.voice")
 
@@ -37,14 +36,20 @@ class LiveDeskSession:
     def __init__(self, office: Office, spec: Dict[str, Any]):
         self.office = office
         self.spec = spec
-        api_key = os.getenv("GEMINI_API_KEY", "")
-        self.client = genai.Client(api_key=api_key) if api_key else None
+        self.client = None
+        if gemini_extras_available():
+            # Imported here so an office that does not use Gemini never loads its SDK.
+            from google import genai
+
+            self.client = genai.Client(api_key=os.getenv("GEMINI_API_KEY", "").strip())
         self.session = None
         self._ctx = None
         self._connected = False
         self._browser = {tool.name: tool for tool in browser_tools(spec["id"])}
 
     def _tools(self) -> list:
+        from google.genai import types
+
         others = roster_colleague_hint(self.office.agents, exclude_id=self.spec.get("id") or "")
         return [
             types.Tool(
@@ -175,7 +180,9 @@ class LiveDeskSession:
             "Use the browser tools only when the user asks to open or browse a site."
         )
 
-    def _config(self) -> types.LiveConnectConfig:
+    def _config(self) -> Any:
+        from google.genai import types
+
         voice = self.spec.get("voiceName") or "Puck"
         return types.LiveConnectConfig(
             response_modalities=[types.Modality.AUDIO],
@@ -196,7 +203,9 @@ class LiveDeskSession:
 
     async def connect(self) -> None:
         if not self.client:
-            raise RuntimeError("GEMINI_API_KEY is required")
+            raise RuntimeError(
+                "Voice needs Gemini: set GEMINI_API_KEY, and list gemini in OFFICE_ALLOWED_PROVIDERS if that is set."
+            )
         self._ctx = self.client.aio.live.connect(model=LIVE_MODEL, config=self._config())
         self.session = await self._ctx.__aenter__()
         self._connected = True
@@ -218,6 +227,8 @@ class LiveDeskSession:
     async def send_audio(self, pcm_bytes: bytes) -> None:
         if not self.is_connected:
             return
+        from google.genai import types
+
         await self.session.send_realtime_input(
             audio=types.Blob(data=pcm_bytes, mime_type=f"audio/pcm;rate={INPUT_SAMPLE_RATE}")
         )
@@ -346,6 +357,8 @@ class LiveDeskSession:
     async def receive_responses(self):
         if not self.session:
             return
+        from google.genai import types
+
         try:
             while self.is_connected:
                 async for response in self.session.receive():

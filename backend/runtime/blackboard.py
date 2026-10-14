@@ -20,38 +20,81 @@ from typing import Any, Dict, List, Optional
 import numpy as np
 
 from runtime.events import BlackboardEvent, EventType, LineageContext
+from runtime.providers import ResolvedModel, api_key, is_allowed, resolve
 
 logger = logging.getLogger("office.blackboard")
 
 _EMBED_LABELS = {"Task", "Result", "Job", "Handoff", "Note"}
 
 
-def _embedding_settings() -> tuple[Optional[str], int]:
+def _embedding_model() -> tuple[Optional[str], Optional[ResolvedModel]]:
+    """(EpochDB model name, remote endpoint). A remote endpoint is served by the
+    office's own embedder instead of one EpochDB loads."""
+    chosen = os.getenv("OFFICE_EMBED_MODEL", "").strip()
+    if chosen:
+        if chosen.lower() == "off":
+            return None, None
+        prefix, sep, rest = chosen.partition("/")
+        if sep and prefix.strip().lower() == "local":
+            # Any sentence-transformers model. EpochDB runs it on this machine.
+            return (rest.strip() or None), None
+        resolved = resolve(chosen)
+        if resolved.provider == "gemini":
+            return f"google:{resolved.model}", None
+        if resolved.provider == "deepseek":
+            raise ValueError(
+                "OFFICE_EMBED_MODEL: DeepSeek has no embeddings endpoint. "
+                "Use gemini/, fireworks/, openai/, local/, or off."
+            )
+        return resolved.label, resolved
     model = (
         os.getenv("EPOCHDB_MODEL")
         or os.getenv("EPOCHDB_EMBEDDING_MODEL")
         or ""
     ).strip()
-    if not model and os.getenv("GEMINI_API_KEY"):
+    if not model and api_key("gemini") and is_allowed("gemini"):
         model = "google:gemini-embedding-2"
+    return (model or None), None
+
+
+def _embedding_settings() -> tuple[Optional[str], int, Optional[ResolvedModel]]:
+    model, remote = _embedding_model()
+    name = model or ""
     dim_raw = os.getenv("EPOCHDB_DIM", "").strip()
     if dim_raw:
         dim = int(dim_raw)
-    elif "gemini-embedding-2" in model or "gemini-embedding-001" in model or "text-embedding-004" in model:
+    elif remote is not None:
         dim = 768
-    elif "text-embedding-3-small" in model:
+    elif "gemini-embedding-2" in name or "gemini-embedding-001" in name or "text-embedding-004" in name:
+        dim = 768
+    elif "text-embedding-3-small" in name:
         dim = 1536
-    elif "gemini-embedding" in model or "text-embedding-3-large" in model:
+    elif "gemini-embedding" in name or "text-embedding-3-large" in name:
         dim = 3072
     else:
         dim = 384
-    return (model or None), dim
+    return model, dim, remote
+
+
+def _embedding_provider(model: Optional[str], remote: Optional[ResolvedModel]) -> Optional[str]:
+    """The provider board embeddings call. None means local or off."""
+    if remote is not None:
+        return remote.provider
+    name = (model or "").lower()
+    # EpochDB sends these names to Google.
+    if name.startswith(("google:", "gemini-embedding", "text-embedding-")):
+        return "gemini"
+    if name.startswith("openai:"):
+        return "openai"
+    return None
 
 
 class EpochBlackboard:
     def __init__(self, storage_dir: str, dim: Optional[int] = None, model: Optional[str] = None):
-        default_model, default_dim = _embedding_settings()
+        default_model, default_dim, remote = _embedding_settings()
         self._model = model if model is not None else default_model
+        # An explicit model is an EpochDB name; only the configured default can be remote.
+        self._remote = remote if model is None else None
         self._dim = int(dim) if dim is not None else default_dim
         self._storage_path = os.path.abspath(os.path.join(storage_dir, "global"))
         os.makedirs(self._storage_path, exist_ok=True)
@@ -78,6 +121,11 @@ class EpochBlackboard:
                 kwargs.pop("auto_extract", None)
                 self._db = EpochDB(**kwargs)
             self._dim = int(getattr(self._db, "dim", self._dim))
+            if self._remote is not None:
+                from runtime.embeddings import OpenAICompatibleEmbedder
+
+                # EpochDB has no embedder parameter. It uses a preset one instead of loading its own.
+                self._db._embedder = OpenAICompatibleEmbedder(self._remote, dim=self._dim)
             logger.info(
                 "EpochDB blackboard at %s (model=%s, dim=%s)",
                 self._storage_path,
@@ -85,6 +133,11 @@ class EpochBlackboard:
                 self._dim,
             )
         return self._db
+
+    @property
+    def embedding_provider(self) -> Optional[str]:
+        """The provider board embeddings call, or None when they are local or off."""
+        return _embedding_provider(self._model, self._remote)
 
     def _embed(self, text: str) -> np.ndarray:
         raw = (text or "").strip()
